@@ -5,9 +5,14 @@ import threading
 import queue
 import tkinter as tk
 from tkinter import scrolledtext, messagebox
+
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
+
+# ==========================
+# Client réseau asynchrone
+# ==========================
 
 class ChatClientAsync:
     def __init__(self, incoming_queue: queue.Queue, ui_callback_on_disconnect):
@@ -23,13 +28,16 @@ class ChatClientAsync:
         self.username = username
         self.connected = True
 
+        # s'enregistrer sur le serveur
         await self.send_json({
             "action": "register",
             "username": username
         })
 
+        # démarrer la tâche de lecture
         asyncio.create_task(self.read_loop())
 
+        # demander la liste des salons
         await self.send_json({"action": "list_rooms"})
 
     async def read_loop(self):
@@ -42,6 +50,7 @@ class ChatClientAsync:
                     msg = json.loads(data.decode().strip())
                 except json.JSONDecodeError:
                     continue
+                # pousser vers la file pour la GUI (thread-safe)
                 self.incoming_queue.put(msg)
         except asyncio.CancelledError:
             pass
@@ -69,16 +78,19 @@ class ChatClientAsync:
         self.reader = None
 
 
-
+# ==========================
+# Interface graphique Tk/ttkbootstrap
+# ==========================
 
 class ChatClientGUI:
     def __init__(self):
         self.root = tb.Window(themename="cosmo")
         self.root.title("Client Chat - ttkbootstrap")
 
-
+        # file de messages provenant du thread asyncio
         self.incoming_queue = queue.Queue()
 
+        # boucle asyncio dans un thread séparé
         self.loop = asyncio.new_event_loop()
         self.async_thread = threading.Thread(
             target=self.run_loop, daemon=True
@@ -94,9 +106,10 @@ class ChatClientGUI:
 
         self.build_ui()
 
+        # timer pour traiter la file
         self.root.after(100, self.process_incoming)
 
-   
+    # --- Gestion de la boucle asyncio dans un thread séparé ---
 
     def run_loop(self):
         asyncio.set_event_loop(self.loop)
@@ -106,40 +119,41 @@ class ChatClientGUI:
         """Planifie un coroutine dans la boucle asyncio."""
         asyncio.run_coroutine_threadsafe(coro, self.loop)
 
+    # --- UI ---
 
     def build_ui(self):
+        # Frame de connexion
         frame_conn = tb.Labelframe(self.root, text="Connexion")
         frame_conn.pack(fill=X, padx=10, pady=5)
 
+        # IP
         tb.Label(frame_conn, text="IP:").grid(row=0, column=0, padx=5, pady=2)
         self.entry_ip = tb.Entry(frame_conn)
-        self.entry_ip.insert(0, "localhost")
+        self.entry_ip.insert(0, "127.0.0.1")
         self.entry_ip.grid(row=0, column=1, padx=5, pady=2)
 
-        tb.Label(frame_conn, text="Port:").grid(row=0, column=2, padx=5, pady=2)
-        self.entry_port = tb.Entry(frame_conn, width=6)
-        self.entry_port.insert(0, "8888")
-        self.entry_port.grid(row=0, column=3, padx=5, pady=2)
-
-        tb.Label(frame_conn, text="Username:").grid(row=0, column=4, padx=5, pady=2)
+        # Username (juste après l'IP)
+        tb.Label(frame_conn, text="Username:").grid(row=0, column=2, padx=5, pady=2)
         self.entry_username = tb.Entry(frame_conn)
-        self.entry_username.grid(row=0, column=5, padx=5, pady=2)
+        self.entry_username.grid(row=0, column=3, padx=5, pady=2)
 
         self.btn_connect = tb.Button(
             frame_conn, text="Se connecter", bootstyle=SUCCESS,
             command=self.on_connect_click
         )
-        self.btn_connect.grid(row=0, column=6, padx=5, pady=2)
+        self.btn_connect.grid(row=0, column=4, padx=5, pady=2)
 
         self.btn_disconnect = tb.Button(
             frame_conn, text="Déconnexion", bootstyle=DANGER,
             command=self.on_disconnect_click, state=DISABLED
         )
-        self.btn_disconnect.grid(row=0, column=7, padx=5, pady=2)
+        self.btn_disconnect.grid(row=0, column=5, padx=5, pady=2)
 
+        # Frame principal : salons + chat
         frame_main = tb.Frame(self.root)
         frame_main.pack(fill=BOTH, expand=True, padx=10, pady=5)
 
+        # Colonne gauche : salons
         frame_rooms = tb.Labelframe(frame_main, text="Salons")
         frame_rooms.pack(side=LEFT, fill=Y, padx=(0, 5))
 
@@ -164,6 +178,7 @@ class ChatClientGUI:
         )
         btn_leave.pack(side=TOP, fill=X, padx=5, pady=2)
 
+        # création d'un nouveau salon
         frame_new_room = tb.Frame(frame_rooms)
         frame_new_room.pack(side=TOP, fill=X, padx=5, pady=5)
 
@@ -176,6 +191,7 @@ class ChatClientGUI:
         )
         btn_create.pack(side=LEFT)
 
+        # Colonne droite : zone de chat
         frame_chat = tb.Labelframe(frame_main, text="Chat")
         frame_chat.pack(side=LEFT, fill=BOTH, expand=True)
 
@@ -197,24 +213,20 @@ class ChatClientGUI:
         )
         self.btn_send.pack(side=LEFT)
 
+    # --- Callbacks UI ---
 
     def on_connect_click(self):
         host = self.entry_ip.get().strip()
-        port = self.entry_port.get().strip()
         username = self.entry_username.get().strip()
+        port = 8888  # port par défaut imposé côté client
 
-        if not host or not port or not username:
-            messagebox.showerror("Erreur", "IP, port et username sont obligatoires")
-            return
-
-        try:
-            port = int(port)
-        except ValueError:
-            messagebox.showerror("Erreur", "Port invalide")
+        if not host or not username:
+            messagebox.showerror("Erreur", "IP et username sont obligatoires")
             return
 
         self.append_chat(f"Connexion à {host}:{port} en tant que {username}...\n")
 
+        # démarrer la connexion asynchrone
         async def do_connect():
             try:
                 await self.client.connect(host, port, username)
@@ -235,6 +247,7 @@ class ChatClientGUI:
         self.run_coro(do_disc())
 
     def on_connected(self):
+        # Mise à jour de l'UI (doit être dans le thread Tk)
         def _update():
             self.btn_connect.config(state=DISABLED)
             self.btn_disconnect.config(state=NORMAL)
@@ -298,6 +311,7 @@ class ChatClientGUI:
             "message": msg
         }))
 
+    # --- Gestion des messages entrants ---
 
     def process_incoming(self):
         """Appelée régulièrement par Tk pour traiter la file."""
@@ -308,7 +322,13 @@ class ChatClientGUI:
                 break
             self.handle_server_message(msg)
 
+        # rappeler cette fonction après 100ms
         self.root.after(100, self.process_incoming)
+
+    def clear_chat(self):
+        self.text_chat.config(state="normal")
+        self.text_chat.delete("1.0", tk.END)
+        self.text_chat.config(state="disabled")
 
     def handle_server_message(self, msg):
         mtype = msg.get("type")
@@ -318,25 +338,34 @@ class ChatClientGUI:
             if room:
                 self.current_room = room
                 self.append_chat(f"Salon actuel : {room}\n")
+
         elif mtype == "error":
             self.append_chat(f"[ERREUR] {msg.get('message')}\n")
+
         elif mtype == "room_list":
             self.update_room_list(msg.get("rooms", []))
+
         elif mtype == "room_joined":
             room = msg.get("room")
             self.current_room = room
+            # effacer la conversation précédente quand on change de salon
+            self.clear_chat()
             self.append_chat(f"Vous avez rejoint le salon : {room}\n")
+
         elif mtype == "room_left":
             room = msg.get("room")
+            self.clear_chat()
             self.append_chat(f"Vous avez quitté le salon : {room}\n")
             self.current_room = None
+
         elif mtype == "chat_message":
             room = msg.get("room")
             sender = msg.get("from")
             text = msg.get("message")
             self.append_chat(f"[{room}] {sender}: {text}\n")
+
         elif mtype == "disconnected":
-            # géré aussi par on_disconnected
+            # géré par on_disconnected
             pass
 
     def update_room_list(self, rooms):
