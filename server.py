@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import socket
 
 logging.basicConfig(
     level=logging.INFO,
@@ -10,8 +11,22 @@ logging.basicConfig(
 logger = logging.getLogger("chat-server")
 
 
+def get_local_ip():
+    """Retourne l'IP locale probable de la machine."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # On ne contacte pas vraiment 8.8.8.8, on utilise juste la stack réseau
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
+
+
 class ChatServer:
-    def __init__(self, host="127.0.0.1", port=8888):
+    def __init__(self, host, port=8888):
         self.host = host
         self.port = port
 
@@ -19,14 +34,18 @@ class ChatServer:
         self.clients = {}
 
         # room_name -> set(usernames)
-        self.rooms = {"general": set()}  # salon par défaut [1]
+        self.rooms = {"general": set()}  # salon par défaut
 
     async def start(self):
         server = await asyncio.start_server(
             self.handle_client, self.host, self.port
         )
-        addr = ', '.join(str(sock.getsockname()) for sock in server.sockets)
-        logger.info(f"Server started on {addr}")
+
+        # IP "réelle" de la machine (pour les clients)
+        ip_locale = get_local_ip()
+
+        # Log propre, sans ('0.0.0.0', 8888)
+        logger.info(f"Server started on {ip_locale}:{self.port}")
 
         async with server:
             await server.serve_forever()
@@ -119,11 +138,17 @@ class ChatServer:
 
         self.rooms[room] = set()
         logger.info(f"Room created: {room}")
+
+        # Info au créateur
         await self.send_json(writer, {
             "type": "info",
             "message": f"Room '{room}' created"
         })
-        # on pourrait renvoyer la liste à jour si besoin
+        # En plus : renvoyer la liste des salons à jour à ce client
+        await self.send_json(writer, {
+            "type": "room_list",
+            "rooms": list(self.rooms.keys())
+        })
 
     async def handle_join_room(self, msg, writer, username):
         if not username:
@@ -229,7 +254,15 @@ class ChatServer:
 
 
 async def main():
-    server = ChatServer(host="127.0.0.1", port=8888)
+    # écouter sur toutes les interfaces pour que les autres machines puissent se connecter
+    server = ChatServer(host="0.0.0.0", port=8888)
+
+    ip_locale = get_local_ip()
+    print("Serveur de chat démarré.")
+    print(f"Adresse IP de cette machine (à utiliser dans le client) : {ip_locale}")
+    print(f"Port : {server.port}")
+    print(f"Dans le client, entre IP = {ip_locale} et Port = {server.port}")
+
     await server.start()
 
 
