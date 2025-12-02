@@ -113,7 +113,7 @@ class ChatClientGUI:
 
         tb.Label(frame_conn, text="IP:").grid(row=0, column=0, padx=5, pady=2)
         self.entry_ip = tb.Entry(frame_conn)
-        self.entry_ip.insert(0, "127.0.0.1")
+        self.entry_ip.insert(0)
         self.entry_ip.grid(row=0, column=1, padx=5, pady=2)
 
         tb.Label(frame_conn, text="Port:").grid(row=0, column=2, padx=5, pady=2)
