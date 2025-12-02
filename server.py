@@ -255,7 +255,7 @@ class ChatServer:
 
 async def main():
     # écouter sur toutes les interfaces pour que les autres machines puissent se connecter
-    server = ChatServer(host="0.0.0.0", port=8888)
+    server = ChatServer(host="0.0.0.0", port=63564)
 
     ip_locale = get_local_ip()
     print("Serveur de chat démarré.")
