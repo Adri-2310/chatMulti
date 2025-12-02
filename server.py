@@ -1,191 +1,240 @@
+# server.py
 import asyncio
 import json
 import logging
-import random
 
-# --- CONFIGURATION ---
-HOST = '0.0.0.0'  # Écoute sur toutes les interfaces
-PORT = 8888
-DEFAULT_ROOM = "general"
-
-# --- LOGGING SETUP ---
-# Configuration du système de journalisation (CLI output)
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format='[%(asctime)s] %(levelname)s:%(name)s: %(message)s'
 )
-logger = logging.getLogger("ChatServer")
+logger = logging.getLogger("chat-server")
 
-# --- STRUCTURES DE DONNÉES EN MÉMOIRE ---
-# Clients: Map<StreamWriter, Dict>
-# Associe la connexion (socket) aux infos du client
-connected_clients = {} 
 
-# Salons: Map<NomSalon, Set<StreamWriter>>
-# Associe un nom de salon à un ensemble de connexions
-rooms = {DEFAULT_ROOM: set()}
+class ChatServer:
+    def __init__(self, host="127.0.0.1", port=8888):
+        self.host = host
+        self.port = port
 
-# --- PROTOCOLE & UTILITAIRES ---
+        # username -> {"writer": StreamWriter, "room": "general" | None}
+        self.clients = {}
 
-async def send_json(writer, message_dict):
-    """Envoie un objet JSON suivi d'un saut de ligne (délimiteur)."""
-    try:
-        data = json.dumps(message_dict) + "\n"
-        writer.write(data.encode('utf-8'))
-        await writer.drain() # Attendre que le buffer soit vidé (non-bloquant)
-    except Exception as e:
-        logger.error(f"Erreur d'envoi: {e}")
+        # room_name -> set(usernames)
+        self.rooms = {"general": set()}  # salon par défaut [1]
 
-def change_room(writer, target_room):
-    """Gère la logique de déplacement d'un utilisateur d'un salon à un autre."""
-    client_info = connected_clients.get(writer)
-    if not client_info:
-        return
+    async def start(self):
+        server = await asyncio.start_server(
+            self.handle_client, self.host, self.port
+        )
+        addr = ', '.join(str(sock.getsockname()) for sock in server.sockets)
+        logger.info(f"Server started on {addr}")
 
-    old_room = client_info['room']
-    
-    # 1. Retirer de l'ancien salon
-    if old_room in rooms:
-        rooms[old_room].discard(writer)
-        # Optionnel: supprimer le salon s'il est vide et n'est pas le défaut
-        if not rooms[old_room] and old_room != DEFAULT_ROOM:
-            del rooms[old_room]
-            logger.info(f"Salon supprimé (vide) : {old_room}")
+        async with server:
+            await server.serve_forever()
 
-    # 2. Créer le nouveau salon si nécessaire
-    if target_room not in rooms:
-        rooms[target_room] = set()
-        logger.info(f"Nouveau salon créé : {target_room}")
+    async def handle_client(self, reader: asyncio.StreamReader,
+                            writer: asyncio.StreamWriter):
+        peer = writer.get_extra_info('peername')
+        logger.info(f"New connection from {peer}")
+        username = None
 
-    # 3. Ajouter au nouveau salon
-    rooms[target_room].add(writer)
-    client_info['room'] = target_room
-    
-    logger.info(f"Client {client_info['id']} déplacé: {old_room} -> {target_room}")
-    return old_room
+        try:
+            while True:
+                data = await reader.readline()
+                if not data:
+                    break  # client déconnecté
 
-async def broadcast_to_room(writer, content):
-    """Envoie un message à tous les membres du salon actuel de l'expéditeur."""
-    client_info = connected_clients.get(writer)
-    if not client_info:
-        return
+                try:
+                    message = json.loads(data.decode().strip())
+                except json.JSONDecodeError:
+                    await self.send_error(writer, "Invalid JSON")
+                    continue
 
-    current_room = client_info['room']
-    sender_id = client_info['id']
-    
-    if current_room in rooms:
-        # Création du message de notification
-        notification = {
-            "type": "NEW_MSG",
-            "payload": {
-                "from": sender_id,
-                "content": content,
-                "room": current_room
-            }
-        }
-        
-        # Envoi à tous sauf à l'expéditeur
-        for client_writer in rooms[current_room]:
-            if client_writer != writer:
-                await send_json(client_writer, notification)
-        
-        logger.info(f"Message diffusé dans [{current_room}] par {sender_id}")
-
-# --- GESTIONNAIRE DE CONNEXION ---
-
-async def handle_client(reader, writer):
-    """Gère une connexion client unique de manière asynchrone."""
-    
-    # 1. Initialisation du client
-    addr = writer.get_extra_info('peername')
-    client_id = f"User-{random.randint(1000, 9999)}"
-    
-    # Enregistrement dans les structures globales
-    connected_clients[writer] = {'id': client_id, 'room': DEFAULT_ROOM}
-    rooms[DEFAULT_ROOM].add(writer)
-    
-    logger.info(f"Nouvelle connexion: {addr} assigné à {client_id} dans {DEFAULT_ROOM}")
-    
-    # Message de bienvenue
-    await send_json(writer, {
-        "type": "INFO",
-        "payload": {"message": f"Bienvenue {client_id}. Vous êtes dans '{DEFAULT_ROOM}'."}
-    })
-
-    try:
-        # 2. Boucle de lecture des messages
-        while True:
-            # Lecture asynchrone jusqu'au saut de ligne
-            data = await reader.readline()
-            if not data: # Connexion fermée par le client
-                break
-            
-            message_text = data.decode('utf-8').strip()
-            if not message_text:
-                continue
-
-            try:
-                # Parsing JSON
-                request = json.loads(message_text)
-                action = request.get('action')
-                payload = request.get('payload', {})
-                
-                # Routing des actions
-                if action == 'CREATE_ROOM' or action == 'JOIN_ROOM':
-                    room_name = payload.get('roomName')
-                    if room_name:
-                        change_room(writer, room_name)
-                        await send_json(writer, {"type": "INFO", "payload": {"message": f"Rejoint salon: {room_name}"}})
-                
-                elif action == 'LEAVE_ROOM':
-                    change_room(writer, DEFAULT_ROOM)
-                    await send_json(writer, {"type": "INFO", "payload": {"message": f"Retour au salon par défaut"}})
-                
-                elif action == 'SEND_MSG':
-                    content = payload.get('content')
-                    if content:
-                        await broadcast_to_room(writer, content)
-                
+                action = message.get("action")
+                if action == "register":
+                    username = await self.handle_register(message, writer)
+                elif action == "list_rooms":
+                    await self.handle_list_rooms(writer)
+                elif action == "create_room":
+                    await self.handle_create_room(message, writer, username)
+                elif action == "join_room":
+                    await self.handle_join_room(message, writer, username)
+                elif action == "leave_room":
+                    await self.handle_leave_room(writer, username)
+                elif action == "send_message":
+                    await self.handle_send_message(message, writer, username)
                 else:
-                    await send_json(writer, {"type": "ERROR", "payload": {"message": "Action inconnue"}})
+                    await self.send_error(writer, "Unknown action")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.exception(f"Error with client {peer}: {e}")
+        finally:
+            logger.info(f"Connection closed: {peer}")
+            if username:
+                await self.cleanup_client(username)
+            writer.close()
+            await writer.wait_closed()
 
-            except json.JSONDecodeError:
-                logger.warning(f"JSON invalide reçu de {client_id}")
-                await send_json(writer, {"type": "ERROR", "payload": {"message": "JSON invalide"}})
-            except Exception as e:
-                logger.error(f"Erreur de traitement: {e}")
+    async def handle_register(self, msg, writer):
+        username = msg.get("username")
+        if not username:
+            await self.send_error(writer, "username required")
+            return None
 
-    except ConnectionResetError:
-        logger.warning(f"Connexion réinitialisée par {client_id}")
-    finally:
-        # 3. Nettoyage à la déconnexion
-        if writer in connected_clients:
-            room = connected_clients[writer]['room']
-            if room in rooms:
-                rooms[room].discard(writer)
-            del connected_clients[writer]
-            logger.info(f"Déconnexion propre: {client_id}")
-        
-        writer.close()
-        await writer.wait_closed()
+        if username in self.clients:
+            await self.send_error(writer, "username already taken")
+            return None
 
-# --- POINT D'ENTRÉE MAIN ---
+        # Enregistrer le client et l'ajouter au salon "general"
+        self.clients[username] = {"writer": writer, "room": "general"}
+        self.rooms["general"].add(username)
+
+        await self.send_json(writer, {
+            "type": "info",
+            "message": f"Registered as {username}",
+            "room": "general"
+        })
+        logger.info(f"User registered: {username}")
+        return username
+
+    async def handle_list_rooms(self, writer):
+        await self.send_json(writer, {
+            "type": "room_list",
+            "rooms": list(self.rooms.keys())
+        })
+
+    async def handle_create_room(self, msg, writer, username):
+        if not username:
+            await self.send_error(writer, "register first")
+            return
+
+        room = msg.get("room")
+        if not room:
+            await self.send_error(writer, "room name required")
+            return
+
+        if room in self.rooms:
+            await self.send_error(writer, "room already exists")
+            return
+
+        self.rooms[room] = set()
+        logger.info(f"Room created: {room}")
+        await self.send_json(writer, {
+            "type": "info",
+            "message": f"Room '{room}' created"
+        })
+        # on pourrait renvoyer la liste à jour si besoin
+
+    async def handle_join_room(self, msg, writer, username):
+        if not username:
+            await self.send_error(writer, "register first")
+            return
+
+        room = msg.get("room")
+        if not room:
+            await self.send_error(writer, "room name required")
+            return
+
+        if room not in self.rooms:
+            await self.send_error(writer, "room does not exist")
+            return
+
+        # quitter l'ancien salon
+        current_room = self.clients[username]["room"]
+        if current_room and username in self.rooms.get(current_room, set()):
+            self.rooms[current_room].remove(username)
+
+        # rejoindre le nouveau
+        self.rooms[room].add(username)
+        self.clients[username]["room"] = room
+
+        await self.send_json(writer, {
+            "type": "room_joined",
+            "room": room
+        })
+        logger.info(f"{username} joined room {room}")
+
+    async def handle_leave_room(self, writer, username):
+        if not username:
+            await self.send_error(writer, "register first")
+            return
+
+        current_room = self.clients[username]["room"]
+        if current_room and username in self.rooms.get(current_room, set()):
+            self.rooms[current_room].remove(username)
+            self.clients[username]["room"] = None
+
+            await self.send_json(writer, {
+                "type": "room_left",
+                "room": current_room
+            })
+            logger.info(f"{username} left room {current_room}")
+        else:
+            await self.send_error(writer, "not in a room")
+
+    async def handle_send_message(self, msg, writer, username):
+        if not username:
+            await self.send_error(writer, "register first")
+            return
+
+        text = msg.get("message")
+        if not text:
+            await self.send_error(writer, "message required")
+            return
+
+        room = self.clients[username]["room"]
+        if not room:
+            await self.send_error(writer, "join a room first")
+            return
+
+        logger.info(f"Message from {username} in {room}: {text}")
+        await self.broadcast_room(room, {
+            "type": "chat_message",
+            "room": room,
+            "from": username,
+            "message": text
+        })
+
+    async def broadcast_room(self, room, payload):
+        users = self.rooms.get(room, set())
+        data = (json.dumps(payload) + "\n").encode()
+        for user in users:
+            writer = self.clients[user]["writer"]
+            try:
+                writer.write(data)
+                await writer.drain()
+            except Exception:
+                logger.warning(f"Failed to send to {user}")
+
+    async def send_error(self, writer, message):
+        await self.send_json(writer, {
+            "type": "error",
+            "message": message
+        })
+
+    async def send_json(self, writer, payload):
+        data = (json.dumps(payload) + "\n").encode()
+        writer.write(data)
+        await writer.drain()
+
+    async def cleanup_client(self, username):
+        info = self.clients.pop(username, None)
+        if not info:
+            return
+
+        room = info["room"]
+        if room and username in self.rooms.get(room, set()):
+            self.rooms[room].remove(username)
+        logger.info(f"Cleaned up client {username}")
+
 
 async def main():
-    server = await asyncio.start_server(
-        handle_client, HOST, PORT
-    )
+    server = ChatServer(host="127.0.0.1", port=8888)
+    await server.start()
 
-    addrs = ', '.join(str(sock.getsockname()) for sock in server.sockets)
-    logger.info(f"Serveur démarré sur {addrs}")
-
-    async with server:
-        await server.serve_forever()
 
 if __name__ == "__main__":
     try:
-        # Lancement de la boucle d'événements asyncio
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Arrêt du serveur demandé.")
+        logger.info("Server stopped by user")
