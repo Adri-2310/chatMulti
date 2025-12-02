@@ -8,9 +8,6 @@ from tkinter import scrolledtext, messagebox
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
-# ==========================
-# Client réseau asynchrone
-# ==========================
 
 class ChatClientAsync:
     def __init__(self, incoming_queue: queue.Queue, ui_callback_on_disconnect):
@@ -26,16 +23,13 @@ class ChatClientAsync:
         self.username = username
         self.connected = True
 
-        # s'enregistrer sur le serveur
         await self.send_json({
             "action": "register",
             "username": username
         })
 
-        # démarrer la tâche de lecture
         asyncio.create_task(self.read_loop())
 
-        # demander la liste des salons
         await self.send_json({"action": "list_rooms"})
 
     async def read_loop(self):
@@ -48,7 +42,6 @@ class ChatClientAsync:
                     msg = json.loads(data.decode().strip())
                 except json.JSONDecodeError:
                     continue
-                # pousser vers la file pour la GUI (thread-safe)
                 self.incoming_queue.put(msg)
         except asyncio.CancelledError:
             pass
@@ -76,19 +69,16 @@ class ChatClientAsync:
         self.reader = None
 
 
-# ==========================
-# Interface graphique Tk/ttkbootstrap
-# ==========================
+
 
 class ChatClientGUI:
     def __init__(self):
         self.root = tb.Window(themename="cosmo")
         self.root.title("Client Chat - ttkbootstrap")
 
-        # file de messages provenant du thread asyncio
+
         self.incoming_queue = queue.Queue()
 
-        # boucle asyncio dans un thread séparé
         self.loop = asyncio.new_event_loop()
         self.async_thread = threading.Thread(
             target=self.run_loop, daemon=True
@@ -104,10 +94,9 @@ class ChatClientGUI:
 
         self.build_ui()
 
-        # timer pour traiter la file
         self.root.after(100, self.process_incoming)
 
-    # --- Gestion de la boucle asyncio dans un thread séparé ---
+   
 
     def run_loop(self):
         asyncio.set_event_loop(self.loop)
@@ -117,10 +106,8 @@ class ChatClientGUI:
         """Planifie un coroutine dans la boucle asyncio."""
         asyncio.run_coroutine_threadsafe(coro, self.loop)
 
-    # --- UI ---
 
     def build_ui(self):
-        # Frame de connexion
         frame_conn = tb.Labelframe(self.root, text="Connexion")
         frame_conn.pack(fill=X, padx=10, pady=5)
 
@@ -150,11 +137,9 @@ class ChatClientGUI:
         )
         self.btn_disconnect.grid(row=0, column=7, padx=5, pady=2)
 
-        # Frame principal : salons + chat
         frame_main = tb.Frame(self.root)
         frame_main.pack(fill=BOTH, expand=True, padx=10, pady=5)
 
-        # Colonne gauche : salons
         frame_rooms = tb.Labelframe(frame_main, text="Salons")
         frame_rooms.pack(side=LEFT, fill=Y, padx=(0, 5))
 
@@ -179,7 +164,6 @@ class ChatClientGUI:
         )
         btn_leave.pack(side=TOP, fill=X, padx=5, pady=2)
 
-        # création d'un nouveau salon
         frame_new_room = tb.Frame(frame_rooms)
         frame_new_room.pack(side=TOP, fill=X, padx=5, pady=5)
 
@@ -192,7 +176,6 @@ class ChatClientGUI:
         )
         btn_create.pack(side=LEFT)
 
-        # Colonne droite : zone de chat
         frame_chat = tb.Labelframe(frame_main, text="Chat")
         frame_chat.pack(side=LEFT, fill=BOTH, expand=True)
 
@@ -214,7 +197,6 @@ class ChatClientGUI:
         )
         self.btn_send.pack(side=LEFT)
 
-    # --- Callbacks UI ---
 
     def on_connect_click(self):
         host = self.entry_ip.get().strip()
@@ -233,7 +215,6 @@ class ChatClientGUI:
 
         self.append_chat(f"Connexion à {host}:{port} en tant que {username}...\n")
 
-        # démarrer la connexion asynchrone
         async def do_connect():
             try:
                 await self.client.connect(host, port, username)
@@ -254,7 +235,6 @@ class ChatClientGUI:
         self.run_coro(do_disc())
 
     def on_connected(self):
-        # Mise à jour de l'UI (doit être dans le thread Tk)
         def _update():
             self.btn_connect.config(state=DISABLED)
             self.btn_disconnect.config(state=NORMAL)
@@ -318,7 +298,6 @@ class ChatClientGUI:
             "message": msg
         }))
 
-    # --- Gestion des messages entrants ---
 
     def process_incoming(self):
         """Appelée régulièrement par Tk pour traiter la file."""
@@ -329,7 +308,6 @@ class ChatClientGUI:
                 break
             self.handle_server_message(msg)
 
-        # rappeler cette fonction après 100ms
         self.root.after(100, self.process_incoming)
 
     def handle_server_message(self, msg):
